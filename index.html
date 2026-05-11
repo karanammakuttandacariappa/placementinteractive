@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Flag Field Challenge</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #06090c; overscroll-behavior: none; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React + ReactDOM from CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel: transpiles JSX in the browser, no build step needed -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useRef, useEffect, useCallback } = React;
+
+    const START = { x: 0, y: 34 };
+    const FW = 100, FH = 68;
+    const SCALE = 6.2;
+    const PAD = 50;
+    const svgW = FW * SCALE + PAD * 2;
+    const svgH = FH * SCALE + PAD * 2;
+
+    const GROUP_META = [
+      { id: "yellow", label: "YELLOW", color: "#F5C518", textColor: "#111" },
+      { id: "red",    label: "RED",    color: "#FF3B30", textColor: "#fff" },
+      { id: "green",  label: "GREEN",  color: "#30D158", textColor: "#111" },
+      { id: "blue",   label: "BLUE",   color: "#0A84FF", textColor: "#fff" },
+    ];
+
+    const INITIAL = {
+      yellow: [{ x:10,y:5 },{ x:50,y:34 },{ x:85,y:8 },{ x:90,y:62 }],
+      red:    [{ x:5,y:60 },{ x:52,y:10 },{ x:82,y:48 },{ x:68,y:28 }],
+      green:  [{ x:15,y:20 },{ x:40,y:56 },{ x:52,y:18 },{ x:38,y:38 }],
+      blue:   [{ x:8,y:48 },{ x:22,y:15 },{ x:30,y:38 },{ x:15,y:30 }],
+    };
+
+    function dist(a, b) { return Math.hypot(b.x - a.x, b.y - a.y); }
+    function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+    const PERMS = (() => {
+      const p = (arr) => arr.length <= 1 ? [[...arr]] :
+        arr.flatMap((v, i) => p([...arr.slice(0,i), ...arr.slice(i+1)]).map(r => [v,...r]));
+      return p([0,1,2,3]);
+    })();
+
+    function optimalRoute(flags) {
+      let best = { total: Infinity, order: [0,1,2,3] };
+      for (const perm of PERMS) {
+        const pts = [START, ...perm.map(i => flags[i])];
+        let total = 0;
+        for (let i = 0; i < pts.length-1; i++) total += dist(pts[i], pts[i+1]);
+        if (total < best.total) best = { total, order: perm };
+      }
+      const pts = [START, ...best.order.map(i => flags[i])];
+      best.segs = pts.slice(0,-1).map((p,i) => ({
+        from: p, to: pts[i+1], d: dist(p, pts[i+1])
+      }));
+      return best;
+    }
+
+    function toSvg(pt) {
+      return [PAD + pt.x * SCALE, PAD + pt.y * SCALE];
+    }
+
+    function deepClone(obj) {
+      return Object.fromEntries(Object.entries(obj).map(([k,v]) => [k, v.map(f => ({...f}))]))
+    }
+
+    function App() {
+      const [flags, setFlags] = useState(deepClone(INITIAL));
+      const [active, setActive] = useState(null);
+      const [drag, setDrag] = useState(null);
+      const svgRef = useRef(null);
+      const dragRef = useRef(null);
+
+      useEffect(() => { dragRef.current = drag; }, [drag]);
+
+      const routes = {};
+      GROUP_META.forEach(g => { routes[g.id] = optimalRoute(flags[g.id]); });
+      const ranked = [...GROUP_META].sort((a,b) => routes[b.id].total - routes[a.id].total);
+      const maxTotal = ranked[0] ? routes[ranked[0].id].total : 1;
+
+      function fieldCoords(e) {
+        const svg = svgRef.current;
+        if (!svg) return null;
+        const rect = svg.getBoundingClientRect();
+        const sx = svgW / rect.width, sy = svgH / rect.height;
+        const cx = e.touches ? e.touches[0].clientX : e.clientX;
+        const cy = e.touches ? e.touches[0].clientY : e.clientY;
+        return {
+          x: clamp(((cx - rect.left) * sx - PAD) / SCALE, 0, FW),
+          y: clamp(((cy - rect.top ) * sy - PAD) / SCALE, 0, FH),
+        };
+      }
+
+      const onMove = useCallback((e) => {
+        const d = dragRef.current;
+        if (!d) return;
+        e.preventDefault();
+        const pos = fieldCoords(e);
+        if (!pos) return;
+        setFlags(prev => {
+          const next = { ...prev };
+          next[d.group] = prev[d.group].map((f, i) => i === d.index ? pos : f);
+          return next;
+        });
+      }, []);
+
+      const onUp = useCallback(() => setDrag(null), []);
+
+      useEffect(() => {
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+        window.addEventListener("touchmove", onMove, { passive: false });
+        window.addEventListener("touchend", onUp);
+        return () => {
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", onUp);
+          window.removeEventListener("touchmove", onMove);
+          window.removeEventListener("touchend", onUp);
+        };
+      }, [onMove, onUp]);
+
+      function startDrag(group, index, e) {
+        e.preventDefault();
+        e.stopPropagation();
+        setDrag({ group, index });
+        setActive(group);
+      }
+
+      const reset = () => setFlags(deepClone(INITIAL));
+
+      return (
+        <div style={{
+          background: "#06090c",
+          minHeight: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          padding: "20px 10px 36px",
+          gap: 16,
+          fontFamily: "'Courier New', Courier, monospace",
+          userSelect: "none",
+          WebkitUserSelect: "none",
+        }}>
+
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 9, letterSpacing: 5, color: "#1e2530", textTransform: "uppercase", marginBottom: 4 }}>
+              Interactive · Live Route Calculator
+            </div>
+            <div style={{ fontSize: 21, fontWeight: 700, color: "#e8edf2", letterSpacing: 0.5 }}>
+              Drag Flags. Watch Routes Update.
+            </div>
+            <div style={{ fontSize: 10, color: "#2a3040", marginTop: 3, letterSpacing: 1 }}>
+              OPTIMAL PATH AUTO-COMPUTED · 24 ROUTE PERMUTATIONS TESTED PER COLOUR
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center", alignItems: "center" }}>
+            {[{ id: null, label: "ALL", color: "#4a5568" }, ...GROUP_META].map(btn => {
+              const isOn = active === btn.id;
+              return (
+                <button key={btn.id ?? "all"}
+                  onClick={() => setActive(active === btn.id ? null : btn.id)}
+                  style={{
+                    padding: "6px 14px", borderRadius: 4,
+                    border: `1px solid ${isOn ? btn.color : "#1a2030"}`,
+                    background: isOn ? btn.color + "18" : "transparent",
+                    color: isOn ? btn.color : "#2a3548",
+                    fontSize: 10, fontWeight: 700, letterSpacing: 2,
+                    cursor: "pointer", textTransform: "uppercase",
+                  }}>
+                  {btn.label}
+                </button>
+              );
+            })}
+            <button onClick={reset} style={{
+              padding: "6px 12px", borderRadius: 4,
+              border: "1px solid #1a2030", background: "transparent",
+              color: "#2a3548", fontSize: 10, letterSpacing: 2, cursor: "pointer",
+              textTransform: "uppercase",
+            }}>↺ RESET</button>
+          </div>
+
+          <div style={{ overflowX: "auto", width: "100%", touchAction: "none" }}>
+            <svg ref={svgRef}
+              viewBox={`0 0 ${svgW} ${svgH}`}
+              width={svgW} height={svgH}
+              style={{ display: "block", margin: "0 auto", maxWidth: "100%",
+                cursor: drag ? "grabbing" : "default" }}>
+
+              <defs>
+                <clipPath id="clip">
+                  <rect x={PAD} y={PAD} width={FW*SCALE} height={FH*SCALE} />
+                </clipPath>
+                {GROUP_META.map(g => (
+                  <marker key={g.id} id={`a${g.id}`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                    <path d="M0,0 L0,8 L8,4 z" fill={g.color} opacity="0.95" />
+                  </marker>
+                ))}
+                <filter id="glow">
+                  <feGaussianBlur stdDeviation="3" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+              </defs>
+
+              {Array.from({length:10}).map((_,i) => (
+                <rect key={i}
+                  x={PAD + i*FW*SCALE/10} y={PAD}
+                  width={FW*SCALE/10} height={FH*SCALE}
+                  fill={i%2===0 ? "#0f2e14" : "#112f16"}
+                />
+              ))}
+
+              <rect x={PAD} y={PAD} width={FW*SCALE} height={FH*SCALE} fill="none" stroke="#e8edf225" strokeWidth={1.5}/>
+              <line x1={PAD+50*SCALE} y1={PAD} x2={PAD+50*SCALE} y2={PAD+FH*SCALE} stroke="#e8edf218" strokeWidth={1.5}/>
+              <circle cx={PAD+50*SCALE} cy={PAD+34*SCALE} r={9.15*SCALE} fill="none" stroke="#e8edf215" strokeWidth={1.5}/>
+              <circle cx={PAD+50*SCALE} cy={PAD+34*SCALE} r={3} fill="#e8edf230"/>
+              <rect x={PAD} y={PAD+FH*0.22*SCALE} width={16.5*SCALE} height={FH*0.56*SCALE} fill="none" stroke="#e8edf215" strokeWidth={1.5}/>
+              <rect x={PAD+(FW-16.5)*SCALE} y={PAD+FH*0.22*SCALE} width={16.5*SCALE} height={FH*0.56*SCALE} fill="none" stroke="#e8edf215" strokeWidth={1.5}/>
+              <rect x={PAD} y={PAD+FH*0.36*SCALE} width={5.5*SCALE} height={FH*0.28*SCALE} fill="none" stroke="#e8edf215" strokeWidth={1.5}/>
+              <rect x={PAD+(FW-5.5)*SCALE} y={PAD+FH*0.36*SCALE} width={5.5*SCALE} height={FH*0.28*SCALE} fill="none" stroke="#e8edf215" strokeWidth={1.5}/>
+              {[[PAD,PAD],[PAD+FW*SCALE,PAD],[PAD,PAD+FH*SCALE],[PAD+FW*SCALE,PAD+FH*SCALE]].map(([cx,cy],i)=>(
+                <circle key={i} cx={cx} cy={cy} r={SCALE} fill="none" stroke="#e8edf212" strokeWidth={1.5}/>
+              ))}
+              <rect x={PAD-18} y={PAD+FH*0.36*SCALE} width={18} height={FH*0.28*SCALE} fill="#e8edf206" stroke="#e8edf215" strokeWidth={1}/>
+
+              {GROUP_META.map(g => {
+                const route = routes[g.id];
+                const isAct = active === g.id;
+                const isDim = active !== null && !isAct;
+                if (isDim) return null;
+                return (
+                  <g key={g.id} clipPath="url(#clip)">
+                    {route.segs.map((seg, i) => {
+                      const [x1,y1] = toSvg(seg.from);
+                      const [x2,y2] = toSvg(seg.to);
+                      const dx=x2-x1, dy=y2-y1, len=Math.sqrt(dx*dx+dy*dy);
+                      if (len < 4) return null;
+                      const ux=dx/len, uy=dy/len;
+                      return (
+                        <line key={i}
+                          x1={x1+ux*(i===0?10:13)} y1={y1+uy*(i===0?10:13)}
+                          x2={x2-ux*14} y2={y2-uy*14}
+                          stroke={g.color}
+                          strokeWidth={isAct ? 2.2 : 1.2}
+                          strokeDasharray={isAct ? "8 4" : "4 5"}
+                          opacity={isAct ? 0.85 : 0.22}
+                          markerEnd={`url(#a${g.id})`}
+                        />
+                      );
+                    })}
+                    {isAct && route.segs.map((seg, i) => {
+                      const [ax,ay] = toSvg(seg.from);
+                      const [bx,by] = toSvg(seg.to);
+                      const mx=(ax+bx)/2, my=(ay+by)/2;
+                      const dx=bx-ax, dy=by-ay, len=Math.sqrt(dx*dx+dy*dy)||1;
+                      const ox=(-dy/len)*14, oy=(dx/len)*14;
+                      return (
+                        <g key={i}>
+                          <rect x={mx+ox-19} y={my+oy-9} width={38} height={16} rx={3} fill="#06090cee"/>
+                          <text x={mx+ox} y={my+oy+4} textAnchor="middle"
+                            fill={g.color} fontSize={10} fontWeight={700} fontFamily="Courier New">
+                            {seg.d.toFixed(1)}m
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </g>
+                );
+              })}
+
+              {GROUP_META.map(g => {
+                const route = routes[g.id];
+                const isAct = active === g.id;
+                const isDim = active !== null && !isAct;
+                return flags[g.id].map((f, fi) => {
+                  const [sx,sy] = toSvg(f);
+                  const isDragging = drag?.group===g.id && drag?.index===fi;
+                  const step = route.order.indexOf(fi);
+                  const r = isDragging ? 13 : isAct ? 11 : 9;
+                  const alpha = isDim ? 0.2 : 1;
+                  return (
+                    <g key={`${g.id}-${fi}`}
+                      style={{ cursor: isDragging ? "grabbing" : "grab" }}
+                      onMouseDown={e => startDrag(g.id, fi, e)}
+                      onTouchStart={e => startDrag(g.id, fi, e)}>
+                      {isDragging && <circle cx={sx} cy={sy} r={26} fill={g.color} opacity={0.12} filter="url(#glow)"/>}
+                      <circle cx={sx} cy={sy} r={r+4} fill="none"
+                        stroke={g.color} strokeWidth={isDragging ? 2.5 : isAct ? 2 : 1}
+                        opacity={isDim ? 0.18 : isDragging ? 1 : isAct ? 0.9 : 0.45}/>
+                      <circle cx={sx} cy={sy} r={r} fill={g.color} opacity={alpha}/>
+                      <text x={sx} y={sy+4} textAnchor="middle"
+                        fill={g.textColor} fontSize={r>10?10:9} fontWeight={700}
+                        fontFamily="Courier New" opacity={alpha}>
+                        {fi+1}
+                      </text>
+                      {isAct && (
+                        <g>
+                          <circle cx={sx+r+4} cy={sy-r-2} r={8} fill="#06090c" stroke={g.color} strokeWidth={1.2}/>
+                          <text x={sx+r+4} y={sy-r+2} textAnchor="middle"
+                            fill={g.color} fontSize={8} fontWeight={700} fontFamily="Courier New">
+                            {step+1}
+                          </text>
+                        </g>
+                      )}
+                      {isDragging && (
+                        <g>
+                          <rect x={sx+16} y={sy-20} width={70} height={17} rx={3} fill="#06090cee" stroke={g.color} strokeWidth={0.8}/>
+                          <text x={sx+51} y={sy-7} textAnchor="middle"
+                            fill={g.color} fontSize={9} fontWeight={700} fontFamily="Courier New">
+                            {f.x.toFixed(1)}m, {f.y.toFixed(1)}m
+                          </text>
+                        </g>
+                      )}
+                    </g>
+                  );
+                });
+              })}
+
+              {(() => {
+                const [sx,sy] = toSvg(START);
+                return (
+                  <g>
+                    <circle cx={sx} cy={sy} r={16} fill="#e8edf2" opacity={0.05}/>
+                    <circle cx={sx} cy={sy} r={9}  fill="#e8edf2" opacity={0.12}/>
+                    <text x={sx} y={sy+5} textAnchor="middle" fill="#e8edf2" fontSize={12} fontWeight={700}>★</text>
+                    <text x={sx+15} y={sy-13} fill="#e8edf250" fontSize={8} letterSpacing={1} fontFamily="Courier New">START</text>
+                  </g>
+                );
+              })()}
+            </svg>
+          </div>
+
+          <div style={{
+            display: "flex", gap: 8, flexWrap: "wrap",
+            justifyContent: "center", maxWidth: 820, width: "100%",
+          }}>
+            {ranked.map((g, rank) => {
+              const route = routes[g.id];
+              const isAct = active === g.id;
+              const pct = (route.total / maxTotal) * 100;
+              const isDraggingThisGroup = drag?.group === g.id;
+              return (
+                <div key={g.id}
+                  onClick={() => setActive(isAct ? null : g.id)}
+                  style={{
+                    flex: "1 1 155px",
+                    background: isAct ? "#0e1520" : "#090c10",
+                    border: `1px solid ${isAct ? g.color : isDraggingThisGroup ? g.color+"55" : "#131820"}`,
+                    borderRadius: 8, padding: "12px 14px",
+                    cursor: "pointer", position: "relative",
+                  }}>
+                  <div style={{
+                    position: "absolute", top: 10, right: 10,
+                    background: g.color+"15", border: `1px solid ${g.color}35`,
+                    borderRadius: 3, padding: "2px 7px",
+                    fontSize: 9, fontWeight: 700, color: g.color, letterSpacing: 1,
+                  }}>#{rank+1}</div>
+                  <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:8 }}>
+                    <div style={{ width:9, height:9, borderRadius:"50%", background:g.color }}/>
+                    <span style={{ color:"#e8edf2", fontWeight:700, fontSize:11, letterSpacing:2 }}>{g.label}</span>
+                  </div>
+                  <div style={{ fontSize:26, fontWeight:700, color:g.color, lineHeight:1, marginBottom:4 }}>
+                    {route.total.toFixed(1)}
+                    <span style={{ fontSize:10, color:"#2a3548", marginLeft:3 }}>m</span>
+                  </div>
+                  <div style={{ background:"#0e1520", borderRadius:2, height:3, overflow:"hidden", marginBottom:8 }}>
+                    <div style={{ width:`${pct}%`, height:"100%", background:g.color, borderRadius:2 }}/>
+                  </div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
+                    {route.segs.map((seg, i) => (
+                      <div key={i} style={{ display:"flex", justifyContent:"space-between" }}>
+                        <span style={{ color:"#1e2a38", fontSize:9, letterSpacing:1 }}>
+                          {i===0?"★":`F${route.order[i-1]+1}`} → F{route.order[i]+1}
+                        </span>
+                        <span style={{ color:"#364050", fontSize:10, fontWeight:700 }}>
+                          {seg.d.toFixed(1)}m
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ fontSize:9, color:"#131a24", letterSpacing:3, textTransform:"uppercase" }}>
+            DRAG ANY FLAG · OPTIMAL ROUTE RECALCULATES LIVE · RANKING UPDATES AUTOMATICALLY
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
